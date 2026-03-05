@@ -19,16 +19,20 @@ METABOT_ENV="$(_find_env)"
 if [[ -n "$METABOT_ENV" && -f "$METABOT_ENV" ]]; then
   _admin_token=$(grep -oP '^MEMORY_ADMIN_TOKEN=\K.*' "$METABOT_ENV" 2>/dev/null || true)
   _reader_token=$(grep -oP '^MEMORY_TOKEN=\K.*' "$METABOT_ENV" 2>/dev/null || true)
+  _memory_secret=$(grep -oP '^MEMORY_SECRET=\K.*' "$METABOT_ENV" 2>/dev/null || true)
   _secret=$(grep -oP '^API_SECRET=\K.*' "$METABOT_ENV" 2>/dev/null || true)
 fi
 MEMORY_URL="${MEMORY_URL:-http://localhost:8100}"
 
-# Token priority: MEMORY_ADMIN_TOKEN > MEMORY_TOKEN > API_SECRET
-# Each level checks env var first, then .env fallback
-if [[ -z "${MEMORY_AUTH:-}" ]]; then
+# Token priority: MEMORY_ADMIN_TOKEN > MEMORY_TOKEN > MEMORY_SECRET > API_SECRET
+# Always resolve from .env; ignore pre-set MEMORY_AUTH (may be stale/wrong token)
+{
   _token="${MEMORY_ADMIN_TOKEN:-${_admin_token:-}}"
   if [[ -z "$_token" ]]; then
     _token="${MEMORY_TOKEN:-${_reader_token:-}}"
+  fi
+  if [[ -z "$_token" ]]; then
+    _token="${MEMORY_SECRET:-${_memory_secret:-}}"
   fi
   if [[ -z "$_token" ]]; then
     _token="${API_SECRET:-${_secret:-}}"
@@ -38,7 +42,7 @@ if [[ -z "${MEMORY_AUTH:-}" ]]; then
   else
     MEMORY_AUTH=""
   fi
-fi
+}
 
 _json() { python3 -m json.tool 2>/dev/null || cat; }
 
