@@ -61,7 +61,7 @@ async function startFeishuBot(botConfig: BotConfig, logger: Logger, memoryServer
     bridge.handleMessage(msg).catch((err) => {
       botLogger.error({ err, msg }, 'Unhandled error in message bridge');
     });
-  }, botOpenId);
+  }, botOpenId, rawSender);
 
   // Create WebSocket client
   const wsClient = new lark.WSClient({

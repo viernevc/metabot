@@ -34,7 +34,7 @@ Feishu WSClient → EventHandler (parse, @mention filter) → MessageBridge → 
 
 - **`src/index.ts`** — Entrypoint. Creates Feishu WS client, fetches bot info for @mention detection, wires up the event dispatcher and bridge, handles graceful shutdown.
 - **`src/config.ts`** — Loads config. `BotConfig` is the per-bot type; `AppConfig` wraps `{ bots, log }`. `loadAppConfig()` reads `BOTS_CONFIG` JSON file or falls back to single-bot mode from env vars.
-- **`src/feishu/event-handler.ts`** — Registers `im.message.receive_v1` on the Lark `EventDispatcher`. Handles text/image parsing, @mention stripping, group chat filtering (only responds when @mentioned). Exports `IncomingMessage` type.
+- **`src/feishu/event-handler.ts`** — Registers `im.message.receive_v1` on the Lark `EventDispatcher`. Handles text/image parsing, @mention stripping, group chat filtering (only responds when @mentioned, except in 2-member groups which are treated like DMs). Exports `IncomingMessage` type.
 - **`src/bridge/message-bridge.ts`** — Core orchestrator. Routes commands (`/reset`, `/stop`, `/status`, `/help`, `/memory`), manages running tasks per chat (one task at a time per `chatId`), executes Claude queries with streaming card updates, handles image input/output, enforces 1-hour timeout.
 - **`src/memory/memory-client.ts`** — Lightweight HTTP client for the MetaMemory server. Used by `/memory` commands (list, search, status) for quick Feishu responses without spawning Claude.
 - **`src/claude/executor.ts`** — Wraps `query()` from the Agent SDK as an async generator yielding `SDKMessage`. Configures permissionMode, allowedTools, MCP settings, session resume.
@@ -102,7 +102,7 @@ When Claude enters plan mode and writes a plan to `.claude/plans/*.md`, the plan
 
 ### Session Isolation
 
-Sessions are keyed by `chatId` (not `userId`), so each group chat and DM gets its own independent session, working directory, and conversation history.
+Sessions are keyed by `chatId` (not `userId`), so each group chat and DM gets its own independent session, working directory, and conversation history. Group chats with exactly 2 members (1 user + 1 bot) are treated like DMs — no @mention required. This lets users "fork" a bot by creating multiple small group chats, each with its own session. The member count is cached for 5 minutes to avoid excessive API calls.
 
 ## Configuration
 
@@ -185,6 +185,7 @@ This is the step-by-step procedure to configure a Feishu bot for this bridge ser
    - **`im:message`** — Read and send messages in private and group chats
    - **`im:message:readonly`** — Read messages in private and group chats
    - **`im:resource`** — Upload images and files (needed to send output files back to chat)
+   - **`im:chat:readonly`** — Read chat info (needed for 2-member group detection)
 5. Click **"Add Scopes"**
 
 ### Step 5: Configure Events (requires running service)

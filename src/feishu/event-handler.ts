@@ -1,6 +1,7 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import type { BotConfig } from '../config.js';
 import type { Logger } from '../utils/logger.js';
+import { MessageSender } from './message-sender.js';
 
 // Re-export from shared types so existing imports continue to work
 export type { IncomingMessage } from '../types.js';
@@ -8,11 +9,29 @@ import type { IncomingMessage } from '../types.js';
 
 export type MessageHandler = (msg: IncomingMessage) => void;
 
+// Cache for group member counts (to avoid calling Feishu API on every message)
+const MEMBER_COUNT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const memberCountCache = new Map<string, { count: number; ts: number }>();
+
+async function isPrivateLikeGroup(chatId: string, sender: MessageSender): Promise<boolean> {
+  const cached = memberCountCache.get(chatId);
+  if (cached && Date.now() - cached.ts < MEMBER_COUNT_CACHE_TTL_MS) {
+    return cached.count === 2;
+  }
+  const count = await sender.getChatMemberCount(chatId);
+  if (count !== undefined) {
+    memberCountCache.set(chatId, { count, ts: Date.now() });
+    return count === 2;
+  }
+  return false;
+}
+
 export function createEventDispatcher(
   config: BotConfig,
   logger: Logger,
   onMessage: MessageHandler,
   botOpenId?: string,
+  messageSender?: MessageSender,
 ): lark.EventDispatcher {
   const dispatcher = new lark.EventDispatcher({});
 
@@ -42,19 +61,18 @@ export function createEventDispatcher(
         const messageId = message.message_id;
 
         // In group chats, only respond when the bot is @mentioned
+        // Exception: 2-member groups (1 user + 1 bot) are treated like DMs
         const mentions = message.mentions;
         if (chatType === 'group') {
-          if (!mentions || mentions.length === 0) {
-            logger.debug('Ignoring group message without @mention');
-            return;
-          }
-          // If we know the bot's open_id, check that the bot is specifically mentioned
-          if (botOpenId) {
-            const botMentioned = mentions.some(
-              (m: any) => m.id?.open_id === botOpenId,
-            );
-            if (!botMentioned) {
-              logger.debug('Ignoring group message that does not @mention the bot');
+          const botMentioned = mentions?.some(
+            (m: any) => !botOpenId || m.id?.open_id === botOpenId,
+          );
+          if (!botMentioned) {
+            // Check if this is a private-like group (only 2 members)
+            if (messageSender && await isPrivateLikeGroup(chatId, messageSender)) {
+              logger.debug({ chatId }, 'Private-like group (2 members), processing without @mention');
+            } else {
+              logger.debug('Ignoring group message without @mention');
               return;
             }
           }
