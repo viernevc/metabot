@@ -24,7 +24,7 @@ export class StreamProcessor {
   private costUsd: number | undefined;
   private durationMs: number | undefined;
   private _imagePaths: Set<string> = new Set();
-  private _pendingQuestion: PendingQuestion | null = null;
+  private _pendingQuestions: PendingQuestion[] = [];
   private _sdkHandledTools: DetectedTool[] = [];
   private _planFilePath: string | null = null;
   private _model: string | undefined;
@@ -63,7 +63,7 @@ export class StreamProcessor {
 
     // Determine running status
     const hasActiveTools = this.toolCalls.some((t) => t.status === 'running');
-    const status = this._pendingQuestion
+    const status = this._pendingQuestions.length > 0
       ? 'waiting_for_input'
       : hasActiveTools ? 'running' : this.responseText ? 'running' : 'thinking';
 
@@ -74,7 +74,7 @@ export class StreamProcessor {
       toolCalls: [...this.toolCalls],
       costUsd: this.costUsd,
       durationMs: this.durationMs,
-      pendingQuestion: this._pendingQuestion || undefined,
+      pendingQuestion: this._pendingQuestions[0] || undefined,
     };
   }
 
@@ -232,15 +232,18 @@ export class StreamProcessor {
       multiSelect: Boolean(q.multiSelect),
     }));
 
-    this._pendingQuestion = { toolUseId, questions: parsed };
+    // Queue instead of overwrite — supports multiple AskUserQuestion calls
+    this._pendingQuestions.push({ toolUseId, questions: parsed });
   }
 
+  /** Remove the first pending question (after it's been fully answered). */
   clearPendingQuestion(): void {
-    this._pendingQuestion = null;
+    this._pendingQuestions.shift();
   }
 
+  /** Peek at the first pending question without removing it. */
   getPendingQuestion(): PendingQuestion | null {
-    return this._pendingQuestion;
+    return this._pendingQuestions[0] ?? null;
   }
 
   /**
@@ -259,7 +262,7 @@ export class StreamProcessor {
   /** Return the current card state without processing a new message. */
   getCurrentState(): CardState {
     const hasActiveTools = this.toolCalls.some((t) => t.status === 'running');
-    const status = this._pendingQuestion
+    const status = this._pendingQuestions.length > 0
       ? 'waiting_for_input'
       : hasActiveTools ? 'running' : this.responseText ? 'running' : 'thinking';
     return {
@@ -269,7 +272,7 @@ export class StreamProcessor {
       toolCalls: [...this.toolCalls],
       costUsd: this.costUsd,
       durationMs: this.durationMs,
-      pendingQuestion: this._pendingQuestion || undefined,
+      pendingQuestion: this._pendingQuestions[0] || undefined,
     };
   }
 
