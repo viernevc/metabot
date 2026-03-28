@@ -102,7 +102,10 @@ prompt_yn() {
   fi
   read -r input < "$TTY" || input=""
   input="${input:-$default}"
-  [[ "${input,,}" == "y" || "${input,,}" == "yes" ]]
+  # Use tr for bash 3.x compatibility (macOS ships bash 3.2)
+  local lower
+  lower="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower" == "y" || "$lower" == "yes" ]]
 }
 
 # ============================================================================
