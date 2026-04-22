@@ -201,6 +201,52 @@ export class MessageBridge {
     });
   }
 
+  /**
+   * Handle a user click on an interactive card button (currently only used for
+   * AskUserQuestion answer buttons). The click is converted into the same
+   * synthetic reply that a numeric text-reply would produce, then handed to
+   * handleAnswer so both paths go through the exact same flow.
+   */
+  async handleCardAction(event: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    value: Record<string, unknown>;
+  }): Promise<void> {
+    const { chatId, userId, messageId, value } = event;
+    const task = this.runningTasks.get(chatId);
+    if (!task || !task.pendingQuestion) {
+      this.logger.debug({ chatId, userId }, 'Card action but no pending question — ignoring');
+      return;
+    }
+    if (value.action !== 'answer_question') {
+      this.logger.debug({ chatId, action: value.action }, 'Unknown card action — ignoring');
+      return;
+    }
+    if (value.toolUseId !== task.pendingQuestion.toolUseId) {
+      this.logger.warn(
+        { chatId, expected: task.pendingQuestion.toolUseId, got: value.toolUseId },
+        'Card action targets a stale question — ignoring',
+      );
+      return;
+    }
+    const optionIndex =
+      typeof value.optionIndex === 'number' ? value.optionIndex : -1;
+    const currentQ = task.pendingQuestion.questions[task.currentQuestionIndex];
+    if (!currentQ || optionIndex < 0 || optionIndex >= currentQ.options.length) {
+      this.logger.warn({ chatId, optionIndex }, 'Card action has invalid optionIndex — ignoring');
+      return;
+    }
+    const syntheticMsg: IncomingMessage = {
+      messageId,
+      chatId,
+      chatType: 'card_action',
+      userId,
+      text: String(optionIndex + 1),
+    };
+    await this.handleAnswer(syntheticMsg, task);
+  }
+
   async handleMessage(msg: IncomingMessage): Promise<void> {
     const { chatId, text } = msg;
 
@@ -361,8 +407,11 @@ export class MessageBridge {
       return;
     }
 
-    // All questions in this call answered — send combined result
-    const answerJson = JSON.stringify({ answers: task.collectedAnswers });
+    // All questions in this call answered — resolve the PreToolUse hook.
+    // resolveQuestion returns answers as updatedInput so the SDK short-circuits
+    // its own interaction prompt; sendAnswer is only a fallback for the legacy
+    // tool_result path (kept inside ExecutionHandle.resolveQuestion).
+    const collectedAnswers = task.collectedAnswers;
 
     if (task.questionTimeoutId) {
       clearTimeout(task.questionTimeoutId);
@@ -373,10 +422,9 @@ export class MessageBridge {
     task.collectedAnswers = {};
     task.processor.clearPendingQuestion();
 
-    const sessionId = task.processor.getSessionId() || '';
-    task.executionHandle.sendAnswer(pending.toolUseId, sessionId, answerJson);
+    task.executionHandle.resolveQuestion(pending.toolUseId, collectedAnswers);
 
-    this.logger.info({ chatId, answers: task.collectedAnswers, toolUseId: pending.toolUseId }, 'Sent all answers to Claude');
+    this.logger.info({ chatId, answers: collectedAnswers, toolUseId: pending.toolUseId }, 'Resolved AskUserQuestion hook with collected answers');
 
     // Check if there are more queued AskUserQuestion calls
     const nextPending = task.processor.getPendingQuestion();
@@ -436,14 +484,13 @@ export class MessageBridge {
       }
     }
 
-    const answerJson = JSON.stringify({ answers: task.collectedAnswers });
+    const collectedAnswers = task.collectedAnswers;
     task.pendingQuestion = null;
     task.currentQuestionIndex = 0;
     task.collectedAnswers = {};
     task.processor.clearPendingQuestion();
 
-    const sid = task.processor.getSessionId() || '';
-    task.executionHandle.sendAnswer(pending.toolUseId, sid, answerJson);
+    task.executionHandle.resolveQuestion(pending.toolUseId, collectedAnswers);
   }
 
   /** Check if message is a media message with default (auto-generated) text. */
@@ -1075,14 +1122,17 @@ export class MessageBridge {
             // Wait for the caller to provide an answer
             const answerJson = await options.onQuestion(pending);
             processor.clearPendingQuestion();
-            const sid = processor.getSessionId() || '';
-            executionHandle.sendAnswer(pending.toolUseId, sid, answerJson);
+            // Parse answers from the caller's JSON and resolve the PreToolUse hook.
+            try {
+              const parsed = JSON.parse(answerJson);
+              executionHandle.resolveQuestion(pending.toolUseId, parsed.answers || {});
+            } catch {
+              executionHandle.resolveQuestion(pending.toolUseId, { _answer: answerJson });
+            }
           } else {
             // Auto-answer when no onQuestion handler is provided
             processor.clearPendingQuestion();
-            const sid = processor.getSessionId() || '';
-            const autoAnswer = JSON.stringify({ answers: { _auto: 'Please decide on your own and proceed.' } });
-            executionHandle.sendAnswer(pending.toolUseId, sid, autoAnswer);
+            executionHandle.resolveQuestion(pending.toolUseId, { _auto: 'Please decide on your own and proceed.' });
           }
           continue;
         }
