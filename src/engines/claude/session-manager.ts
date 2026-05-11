@@ -89,6 +89,19 @@ export class SessionManager {
     return session;
   }
 
+  /**
+   * Update per-chat working directory.
+   * Returns the normalized absolute path that was saved.
+   */
+  setWorkingDirectory(chatId: string, workingDirectory: string): string {
+    const session = this.getSession(chatId);
+    session.workingDirectory = path.resolve(workingDirectory);
+    session.lastUsed = Date.now();
+    this.logger.info({ chatId, workingDirectory: session.workingDirectory }, 'Session working directory updated');
+    this.saveToDisk();
+    return session.workingDirectory;
+  }
+
   private evictOldest(): void {
     let oldestKey: string | undefined;
     let oldestTime = Infinity;
@@ -181,8 +194,13 @@ export class SessionManager {
     try {
       const data: Record<string, PersistedSession> = {};
       for (const [chatId, session] of this.sessions) {
-        // Persist sessions that have a sessionId, model, or engine override
-        if (session.sessionId || session.model || session.engine) {
+        // Persist sessions that have a session id, any override, or custom working directory.
+        if (
+          session.sessionId
+          || session.model
+          || session.engine
+          || session.workingDirectory !== this.defaultWorkingDirectory
+        ) {
           data[chatId] = {
             sessionId: session.sessionId || '',
             sessionIdEngine: session.sessionIdEngine,

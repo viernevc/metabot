@@ -15,8 +15,17 @@ const isWindows = process.platform === 'win32';
 function resolveClaudePath(): string {
   if (process.env.CLAUDE_EXECUTABLE_PATH) return process.env.CLAUDE_EXECUTABLE_PATH;
   try {
-    const cmd = isWindows ? 'where claude' : 'which claude';
-    return execSync(cmd, { encoding: 'utf-8' }).trim().split(/\r?\n/)[0];
+    if (isWindows) {
+      // npm global installs usually expose claude via a .cmd shim.
+      const winCandidates = ['where claude.cmd', 'where claude'];
+      for (const cmd of winCandidates) {
+        const resolved = execSync(cmd, { encoding: 'utf-8' }).trim().split(/\r?\n/)[0];
+        if (resolved) return resolved;
+      }
+    } else {
+      return execSync('which claude', { encoding: 'utf-8' }).trim().split(/\r?\n/)[0];
+    }
+    return 'claude';
   } catch {
     return isWindows ? 'claude' : '/usr/local/bin/claude';
   }
@@ -52,7 +61,7 @@ function hasCredentialsFile(): boolean {
 
 /**
  * Create a custom spawn function for cross-platform compatibility.
- * - Uses process.execPath (current Node binary) to avoid PATH issues on Windows.
+ * - Supports npm global installs on Windows (claude.cmd shim).
  * - Always filters CLAUDE* env vars to prevent nested session errors.
  * - Filters ANTHROPIC auth env vars only when an explicit API key is provided
  *   or credentials.json exists (so env-var-only users can still authenticate).
@@ -64,8 +73,6 @@ function createSpawnFn(explicitApiKey?: string): (options: SpawnOptions) => Spaw
   const filterAuthVars = !!(explicitApiKey || hasCredentialsFile());
 
   return (options: SpawnOptions): SpawnedProcess => {
-    const nodePath = process.execPath;
-
     // Merge provided env with process.env for a complete environment
     const baseEnv = options.env && Object.keys(options.env).length > 0
       ? { ...process.env, ...options.env }
@@ -85,11 +92,19 @@ function createSpawnFn(explicitApiKey?: string): (options: SpawnOptions) => Spaw
       env.ANTHROPIC_API_KEY = explicitApiKey;
     }
 
-    const child = spawn(nodePath, options.args, {
+    const executable = CLAUDE_EXECUTABLE;
+    const isCmdShim = isWindows && /\.(cmd|bat)$/i.test(executable);
+    const isNodeScript = /\.(cjs|mjs|js)$/i.test(executable);
+    const command = isNodeScript ? process.execPath : executable;
+    const args = isNodeScript ? [executable, ...options.args] : options.args;
+
+    const child = spawn(command, args, {
       cwd: options.cwd,
       env,
       signal: options.signal,
       stdio: ['pipe', 'pipe', 'pipe'],
+      // Required for .cmd/.bat launch on Windows.
+      ...(isCmdShim ? { shell: true } : {}),
     });
 
     return child as unknown as SpawnedProcess;

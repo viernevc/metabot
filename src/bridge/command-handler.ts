@@ -7,6 +7,9 @@ import type { EngineName } from '../engines/index.js';
 import { MemoryClient } from '../memory/memory-client.js';
 import { AuditLogger } from '../utils/audit-logger.js';
 import type { DocSync } from '../sync/doc-sync.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 export class CommandHandler {
   private docSync: DocSync | null = null;
@@ -44,6 +47,7 @@ export class CommandHandler {
           '`/reset` - Clear session, start fresh',
           '`/stop` - Abort current running task',
           '`/status` - Show current session info',
+          '`/cd [path]` - Show or set working directory',
           '`/model` - Show current engine/model; `/model list` - Available options',
           '`/model claude`, `/model kimi`, or `/model codex` - Switch engine (resets session)',
           '`/model <name>` - Set model for current engine',
@@ -52,7 +56,7 @@ export class CommandHandler {
           '',
           '**Usage:**',
           'Send any text message to start a conversation with the configured agent engine.',
-          'Each chat has an independent session with a fixed working directory.',
+          'Each chat has an independent session; use `/cd` to change working directory for current chat.',
           '',
           '**Memory Commands:**',
           '`/memory list` - Show folder tree',
@@ -97,6 +101,12 @@ export class CommandHandler {
           `**Model:** \`${activeModel}\`${session.model ? ' (session override)' : ''}`,
           `**Running:** ${isRunning ? 'Yes ⏳' : 'No'}`,
         ].join('\n'));
+        return true;
+      }
+
+      case '/cd': {
+        const args = text.slice('/cd'.length).trim();
+        await this.handleCdCommand(chatId, args);
         return true;
       }
 
@@ -233,6 +243,71 @@ export class CommandHandler {
       default:
         await this.sender.sendTextNotice(chatId, '📝 Sync', 'Usage:\n- `/sync` — Sync all documents to Feishu Wiki\n- `/sync status` — Show sync status', 'blue');
     }
+  }
+
+  private async handleCdCommand(chatId: string, args: string): Promise<void> {
+    const session = this.sessionManager.getSession(chatId);
+
+    // No args: show current working directory
+    if (!args) {
+      await this.sender.sendTextNotice(
+        chatId,
+        '📁 Working Directory',
+        `Current: \`${session.workingDirectory}\`\n\nUsage: \`/cd <path>\``,
+        'blue',
+      );
+      return;
+    }
+
+    const requested = args.trim();
+    const expandedHome = requested === '~'
+      ? os.homedir()
+      : requested.startsWith('~/')
+        ? path.join(os.homedir(), requested.slice(2))
+        : requested;
+    const targetPath = path.isAbsolute(expandedHome)
+      ? expandedHome
+      : path.resolve(session.workingDirectory, expandedHome);
+
+    if (!fs.existsSync(targetPath)) {
+      await this.sender.sendTextNotice(
+        chatId,
+        '❌ Invalid Directory',
+        `Path does not exist: \`${targetPath}\``,
+        'red',
+      );
+      return;
+    }
+
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(targetPath);
+    } catch (err: any) {
+      await this.sender.sendTextNotice(
+        chatId,
+        '❌ Invalid Directory',
+        `Cannot access path: \`${targetPath}\`\n${err.message || ''}`.trim(),
+        'red',
+      );
+      return;
+    }
+    if (!stat.isDirectory()) {
+      await this.sender.sendTextNotice(
+        chatId,
+        '❌ Invalid Directory',
+        `Path is not a directory: \`${targetPath}\``,
+        'red',
+      );
+      return;
+    }
+
+    const resolved = this.sessionManager.setWorkingDirectory(chatId, targetPath);
+    await this.sender.sendTextNotice(
+      chatId,
+      '✅ Working Directory Updated',
+      `Now using: \`${resolved}\`\n\n_Takes effect on the next message._`,
+      'green',
+    );
   }
 
   private async handleModelCommand(chatId: string, args: string): Promise<void> {
