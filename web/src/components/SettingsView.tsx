@@ -42,7 +42,7 @@ export function SettingsView() {
   }, [token]);
 
   const maskedToken = token
-    ? `${token.slice(0, 6)}${'*'.repeat(Math.min(token.length - 6, 20))}`
+    ? `${token.slice(0, 6)}${'*'.repeat(Math.max(0, Math.min(token.length - 6, 20)))}`
     : 'Not set';
 
   return (

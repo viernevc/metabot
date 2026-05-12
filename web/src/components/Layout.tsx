@@ -2,7 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useStore } from '../store';
 import { useWebSocket } from '../hooks/useWebSocket';
-import type { BotInfo, ChatGroup, ChatSession } from '../types';
+import type { ActiveView, BotInfo, ChatGroup, ChatSession } from '../types';
 import { GroupCreateDialog } from './chat';
 import s from './Layout.module.css';
 
@@ -401,13 +401,29 @@ function GroupCard({
    Mobile: native stack navigation (list ↔ chat) + bottom tabs
    ═══════════════════════════════════════════════════════════════ */
 
+function normalizeWebPath(pathname: string): string {
+  return pathname.replace(/^\/web/, '') || '/';
+}
+
+/** Sidebar/tab state must match the URL; otherwise mobile hides `<Routes>` children (blank Settings). */
+function pathnameToActiveView(pathname: string): ActiveView {
+  const p = normalizeWebPath(pathname);
+  if (p === '/' || p === '') return 'chat';
+  if (p.startsWith('/memory')) return 'memory';
+  if (p.startsWith('/settings')) return 'settings';
+  if (p.startsWith('/team')) return 'team';
+  if (p.startsWith('/voice')) return 'voice';
+  return 'chat';
+}
+
 /** Check if current route matches the expected activeView (prevents stale children flash) */
 function routeMatchesView(pathname: string, view: string): boolean {
-  const p = pathname.replace(/^\/web/, '') || '/';
+  const p = normalizeWebPath(pathname);
   if (view === 'chat') return p === '/' || p === '';
   if (view === 'memory') return p.startsWith('/memory');
   if (view === 'settings') return p.startsWith('/settings');
   if (view === 'team') return p.startsWith('/team');
+  if (view === 'voice') return p.startsWith('/voice');
   return true;
 }
 
@@ -418,6 +434,12 @@ export function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const activeView = useStore((s) => s.activeView);
   const setView = useStore((s) => s.setView);
+
+  /* URL is source of truth for activeView — fixes refresh/direct link to /settings on mobile (was blank). */
+  useEffect(() => {
+    const next = pathnameToActiveView(location.pathname);
+    if (next !== useStore.getState().activeView) setView(next);
+  }, [location.pathname, setView]);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const setSidebarOpen = useStore((s) => s.setSidebarOpen);

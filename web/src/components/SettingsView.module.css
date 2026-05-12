@@ -3,8 +3,10 @@
    ============================================================ */
 
 .container {
-  max-width: 640px;
-  margin: 0 auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  box-sizing: border-box;
   padding: 44px 28px;
   height: 100%;
   overflow-y: auto;
@@ -271,6 +273,8 @@
 .version a:hover { text-decoration: underline; }
 
 @media (max-width: 768px) {
-  .container { padding: 28px 18px; }
+  .container {
+    padding: 28px 18px;
+  }
   .title { font-size: 22px; }
 }
