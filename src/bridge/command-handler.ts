@@ -10,6 +10,13 @@ import type { DocSync } from '../sync/doc-sync.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import {
+  aggregateClaudeCodeUsage,
+  encodeClaudeProjectDirName,
+  formatClaudeUsageMarkdown,
+  parseUsageArgs,
+} from '../claude/claude-code-usage.js';
+import { SLASH_CMD, USAGE_TEXT } from './constants.js';
 
 export class CommandHandler {
   private docSync: DocSync | null = null;
@@ -41,7 +48,7 @@ export class CommandHandler {
     this.audit.log({ event: 'command', botName: this.config.name, chatId, userId, prompt: cmd });
 
     switch (cmd.toLowerCase()) {
-      case '/help':
+      case SLASH_CMD.help:
         await this.sender.sendTextNotice(chatId, '📖 Help', [
           '**Available Commands:**',
           '`/reset` - Clear session, start fresh',
@@ -53,10 +60,13 @@ export class CommandHandler {
           '`/model <name>` - Set model for current engine',
           '`/memory` - Memory document commands',
           '`/help` - Show this help message',
+          '`/usage [project path] [from-date] [to-date]` - Claude Code token usage (local JSONL)',
           '',
           '**Usage:**',
           'Send any text message to start a conversation with the configured agent engine.',
           'Each chat has an independent session; use `/cd` to change working directory for current chat.',
+          '',
+          '**`/usage`:** 读取本机 Claude Code 会话 JSONL。默认 **当天**、**全部项目**。日期 `YYYY-MM-DD`（多次即区间）；剩余为 **一个** 项目路径。扫描目录可用环境变量配置（见 `.env.example`：`METABOT_CLAUDE_USAGE_PROJECT_DIRS`、`CLAUDE_CONFIG_DIR`）。',
           '',
           '**Memory Commands:**',
           '`/memory list` - Show folder tree',
@@ -69,12 +79,12 @@ export class CommandHandler {
         ].join('\n'));
         return true;
 
-      case '/reset':
+      case SLASH_CMD.reset:
         this.sessionManager.resetSession(chatId);
         await this.sender.sendTextNotice(chatId, '✅ Session Reset', 'Conversation cleared. Working directory preserved.', 'green');
         return true;
 
-      case '/stop': {
+      case SLASH_CMD.stop: {
         const task = this.getRunningTask(chatId);
         if (task) {
           this.audit.log({ event: 'task_stopped', botName: this.config.name, chatId, userId, durationMs: Date.now() - task.startTime });
@@ -86,7 +96,7 @@ export class CommandHandler {
         return true;
       }
 
-      case '/status': {
+      case SLASH_CMD.status: {
         const session = this.sessionManager.getSession(chatId);
         const isRunning = !!this.getRunningTask(chatId);
         const botEngine = resolveEngineName(this.config);
@@ -104,27 +114,33 @@ export class CommandHandler {
         return true;
       }
 
-      case '/cd': {
-        const args = text.slice('/cd'.length).trim();
+      case SLASH_CMD.cd: {
+        const args = text.slice(SLASH_CMD.cd.length).trim();
         await this.handleCdCommand(chatId, args);
         return true;
       }
 
-      case '/memory': {
-        const args = text.slice('/memory'.length).trim();
+      case SLASH_CMD.memory: {
+        const args = text.slice(SLASH_CMD.memory.length).trim();
         await this.handleMemoryCommand(chatId, args);
         return true;
       }
 
-      case '/sync': {
-        const args = text.slice('/sync'.length).trim();
+      case SLASH_CMD.sync: {
+        const args = text.slice(SLASH_CMD.sync.length).trim();
         await this.handleSyncCommand(chatId, args);
         return true;
       }
 
-      case '/model': {
-        const args = text.slice('/model'.length).trim();
+      case SLASH_CMD.model: {
+        const args = text.slice(SLASH_CMD.model.length).trim();
         await this.handleModelCommand(chatId, args);
+        return true;
+      }
+
+      case SLASH_CMD.usage: {
+        const args = text.slice(SLASH_CMD.usage.length).trim();
+        await this.handleUsageCommand(chatId, args);
         return true;
       }
 
@@ -438,6 +454,96 @@ export class CommandHandler {
       `Session model set to \`${newModel}\` on engine \`${activeEngine}\`. It will take effect on the next message.`,
       'green',
     );
+  }
+
+  private async handleUsageCommand(chatId: string, args: string): Promise<void> {
+    const { projectPath: rawPath, startDate, endDate } = parseUsageArgs(args);
+
+    let resolvedProject: string | undefined;
+    if (rawPath) {
+      resolvedProject = this.resolvePathForUsage(chatId, rawPath);
+      if (!fs.existsSync(resolvedProject)) {
+        await this.sender.sendTextNotice(
+          chatId,
+          USAGE_TEXT.TITLE_ERROR,
+          `路径不存在：\`${resolvedProject}\``,
+          USAGE_TEXT.COLOR_ERROR,
+        );
+        return;
+      }
+      if (!fs.statSync(resolvedProject).isDirectory()) {
+        await this.sender.sendTextNotice(
+          chatId,
+          USAGE_TEXT.TITLE_ERROR,
+          `不是目录：\`${resolvedProject}\``,
+          USAGE_TEXT.COLOR_ERROR,
+        );
+        return;
+      }
+    }
+
+    try {
+      const result = await aggregateClaudeCodeUsage({
+        projectPath: resolvedProject,
+        startDate,
+        endDate,
+      });
+
+      if (rawPath && !result.matchedProjectDir) {
+        const hint = encodeClaudeProjectDirName(resolvedProject!);
+        await this.sender.sendTextNotice(
+          chatId,
+          USAGE_TEXT.TITLE_ERROR,
+          [
+            '在该机上没有找到对应 Claude Code 会话目录。',
+            `解析路径：\`${resolvedProject}\``,
+            `预期文件夹名（近似）：\`${hint}\``,
+            `已检查：${result.projectRoots.map((p) => `\`${p}\``).join('，') || '_无_'}`,
+          ].join('\n'),
+          USAGE_TEXT.COLOR_WARNING,
+        );
+        return;
+      }
+
+      const range =
+        startDate === endDate ? startDate : `${startDate} → ${endDate}`;
+      const scope = rawPath ? `\`${resolvedProject}\`` : '_全部项目汇总_';
+      const body = [
+        `**范围：** ${range}`,
+        `**项目：** ${scope}`,
+        '',
+        formatClaudeUsageMarkdown(result),
+      ].join('\n');
+
+      await this.sender.sendTextNotice(
+        chatId,
+        USAGE_TEXT.TITLE_REPORT,
+        body,
+        USAGE_TEXT.COLOR_REPORT,
+      );
+    } catch (err: any) {
+      this.logger.error({ err, chatId }, '/usage command error');
+      await this.sender.sendTextNotice(
+        chatId,
+        USAGE_TEXT.TITLE_ERROR,
+        err?.message || String(err),
+        USAGE_TEXT.COLOR_ERROR,
+      );
+    }
+  }
+
+  /** Resolve optional `/usage` project path like `/cd` (cwd-relative allowed). */
+  private resolvePathForUsage(chatId: string, requested: string): string {
+    const session = this.sessionManager.getSession(chatId);
+    const expandedHome =
+      requested === '~'
+        ? os.homedir()
+        : requested.startsWith('~/')
+          ? path.join(os.homedir(), requested.slice(2))
+          : requested;
+    return path.isAbsolute(expandedHome)
+      ? path.resolve(expandedHome)
+      : path.resolve(session.workingDirectory, expandedHome);
   }
 
   private defaultModelForEngine(engine: EngineName): string | undefined {

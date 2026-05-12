@@ -133,7 +133,12 @@ export class MessageBridge {
     const memoryClient = new MemoryClient(memoryServerUrl, logger, memorySecret);
 
     this.commandHandler = new CommandHandler(
-      config, logger, sender, this.sessionManager, memoryClient, this.audit,
+      config,
+      logger,
+      sender,
+      this.sessionManager,
+      memoryClient,
+      this.audit,
       (chatId) => this.runningTasks.get(chatId),
       (chatId) => this.stopTask(chatId),
     );
